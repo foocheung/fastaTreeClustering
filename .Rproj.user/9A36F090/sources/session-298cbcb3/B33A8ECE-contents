@@ -1,0 +1,12 @@
+The DEGs I generated were intermediate files created during the pathway analysis, which are stored in the DEG_PATHWAYS directory within the FIGURES_FOR_MS folder. The key output from this analysis is allGSEA.csv, which produced excellent results. The DEG contrast on its own may not be particularly informative outside of this specific context, as it was designed specifically to support pathway-level comparisons. 
+
+Anyhow I’ve have included the temporary DEG files used to construct this contrast below in case you wanted to look at them. These files were customized for the pathway analysis and may not be useful beyond that scope, details below.
+
+The pathway analysis uses a "delta of delta" strategy to isolate pathway expression changes specific to the treatment while accounting for PMA-induced effects:
+
+(Treated_trained − Untreated_trained) − (Treated_untrained − Untreated_untrained)
+
+This approach highlights treatment-specific changes by removing general PMA-driven activation. By normalizing each treatment condition to its untrained (PMA-only) counterpart, we can eliminate non-specific responses and focus on the biological effects directly attributable to the treatment. This PMA-subtracted contrast enhances the specificity of the signal, which is why the pathway results are so robust.
+
+Additionally, the individual comparisons computed gene-wise fold changes for each delta-of-delta contrast. These per-gene values were then used to assess pathway enrichment, allowing us to pinpoint biological processes that are specifically altered by the treatment, beyond PMA effects alone.
+

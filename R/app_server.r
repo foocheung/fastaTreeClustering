@@ -1,0 +1,262 @@
+# R/app_server.R
+
+#' @importFrom stringr str_extract
+#' @importFrom dplyr mutate
+#' @importFrom stringdist stringdistmatrix
+#'
+#' The application server-side
+#'
+#' @param input,output,session Internal parameters for {shiny}.
+#'     DO NOT REMOVE.
+#' @import shiny
+#' @noRd
+app_server <- function(input, output, session) {
+  # Reactive values
+  rv <- reactiveValues(
+    df = NULL,
+    dist_matrix = NULL,
+    hc = NULL,
+    dend = NULL,
+    ready = FALSE,
+    status_log = character()
+  )
+
+  # Function: Update status log
+  update_status <- function(message) {
+    rv$status_log <- c(rv$status_log, message)
+    output$status_text <- renderText({
+      paste(rv$status_log, collapse = "\n")
+    })
+  }
+
+  # Get the file path based on user selection
+  get_fasta_path <- reactive({
+    if (input$data_source == "upload") {
+      # Check if a file is uploaded
+      req(input$upload_fasta)
+      return(input$upload_fasta$datapath)
+    } else {
+      # Use internal data file
+      return(app_sys("app/www/PosNegFiltered_Light_JunctionAA.fasta"))
+    }
+  })
+
+  # Process Selected Data
+  observeEvent(input$process_btn, {
+    # Clear old log
+    rv$status_log <- character()
+    # Check if we have a valid file path
+    file_path <- tryCatch({
+      get_fasta_path()
+    }, error = function(e) {
+      update_status("⚠️ Error: Please select a data source first!")
+      return(NULL)
+    })
+
+    # If we have a valid file path, proceed with processing
+    if (!is.null(file_path)) {
+      # Check if the file exists
+      if (!file.exists(file_path)) {
+        update_status(paste0("⚠️ Error: File not found: ", file_path))
+        update_status("Make sure the internal data file is in the www folder of your Shiny app.")
+        return()
+      }
+
+      withProgress(message = 'Processing file...', value = 0, {
+        incProgress(0.05)
+        if (input$data_source == "upload") {
+          update_status("Starting processing of uploaded file...")
+        } else {
+          update_status("Starting processing of internal data...")
+        }
+
+        incProgress(0.1)
+        update_status("Reading FASTA file...")
+        seqs <- Biostrings::readAAStringSet(file_path)
+        df <- data.frame(header = names(seqs), sequence = as.character(seqs), stringsAsFactors = FALSE)
+
+        incProgress(0.2)
+        update_status("Parsing metadata...")
+        df <- df %>%
+          mutate(
+            Clone_ID = str_extract(header, "(?<=Clone_)\\d+"),
+            Chain = sub(".*\\| Chain=([^|]+).*", "\\1", header),
+            Group = sub(".*\\| Group=([^|]+)", "\\1", header)
+          )
+
+        incProgress(0.3)
+        update_status(paste0("Calculating distance matrix using ", input$distance_method, "..."))
+        dist_matrix <- stringdistmatrix(df$sequence, df$sequence, method = input$distance_method)
+        rownames(dist_matrix) <- df$header
+        colnames(dist_matrix) <- df$header
+
+        incProgress(0.7)
+        update_status("Building clustering tree...")
+        hc <- hclust(as.dist(dist_matrix), method = "average")
+        dend <- as.dendrogram(hc)
+
+        # Store everything in reactive values
+        rv$df <- df
+        rv$dist_matrix <- dist_matrix
+        rv$hc <- hc
+        rv$dend <- dend
+        rv$ready <- TRUE
+
+        incProgress(1)
+        update_status("✅ File processed successfully! Ready for clustering.")
+      })
+    }
+  })
+
+  # Dynamic slider for height-based cutting
+  output$height_slider_ui <- renderUI({
+    req(rv$ready)
+    sliderInput("cut_height",
+                "Select Cut Height (h):",
+                min = 0,
+                max = max(rv$hc$height) * 1.1,
+                value = median(rv$hc$height),
+                step = max(rv$hc$height) / 100)
+  })
+
+  # --- Get clustering results based on method ---
+  clustering_results <- reactive({
+    req(rv$ready)
+
+    if(input$cluster_method == "linear") {
+      get_linear_bins(rv$hc, rv$df, input$num_bins)
+    } else if(input$cluster_method == "dynamic") {
+      get_dynamic_clusters(rv$hc, rv$df, rv$dist_matrix, input$deepSplit, input$minClusterSize)
+    } else if(input$cluster_method == "height") {
+      req(input$cut_height)
+      get_height_clusters(rv$hc, rv$df, input$cut_height)
+    }
+  })
+
+  # --- Dynamic UI Elements ---
+  output$tree_plot_ui <- renderUI({
+    req(rv$ready)
+    plotOutput("tree_plot", height = paste0(input$plot_height, "px"), width = paste0(input$plot_width, "px"))
+  })
+
+  output$group_plot_ui <- renderUI({
+    req(rv$ready)
+    plotOutput("group_plot", height = paste0(input$plot_height, "px"), width = paste0(input$plot_width, "px"))
+  })
+
+  output$histogram_plot_ui <- renderUI({
+    req(rv$ready)
+    plotOutput("histogram_plot", height = paste0(input$plot_height, "px"), width = paste0(input$plot_width, "px"))
+  })
+
+  # --- Render Tree Plot ---
+  output$tree_plot <- renderPlot({
+    req(rv$ready)
+    if(input$cluster_method == "linear") {
+      plot_linear_tree(rv$hc, clustering_results(), input$num_bins, input$distance_method)
+    } else if(input$cluster_method == "dynamic") {
+      plot_dynamic_tree(
+        rv$hc, rv$dend, rv$df, clustering_results(),
+        input$distance_method, input$deepSplit, input$minClusterSize,
+        input$show_rectangles, input$show_bin_numbers,
+        input$color_tip_text, input$show_bottom_labels
+      )
+    } else if(input$cluster_method == "height") {
+      plot_height_tree(
+        rv$hc, rv$dend, rv$df, clustering_results(),
+        input$distance_method, input$cut_height,
+        input$show_height_line, input$color_height_clusters, input$show_height_rectangles
+      )
+    }
+  })
+
+  # --- Group Composition Plot ---
+  output$group_plot <- renderPlot({
+    req(rv$ready)
+    plot_group_composition(clustering_results(), input$cluster_method)
+  })
+
+  # --- Bin/Cluster Size Histogram ---
+  output$histogram_plot <- renderPlot({
+    req(rv$ready)
+    if(input$cluster_method == "height") {
+      title <- paste0("Cluster Size Distribution at h=", round(input$cut_height, 2))
+    } else if(input$cluster_method == "linear") {
+      title <- paste0("Bin Size Distribution with ", input$num_bins, " bins")
+    } else {
+      title <- paste0("Dynamic Cluster Size Distribution (deepSplit=", input$deepSplit,
+                     ", minSize=", input$minClusterSize, ")")
+    }
+
+    plot_histogram(clustering_results(), input$cluster_method, title)
+  })
+
+  # --- Download Handlers ---
+  output$download_data <- downloadHandler(
+    filename = function() {
+      paste0(input$cluster_method, "_Clusters_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      write.csv(clustering_results()$df_merged, file, row.names = FALSE)
+    }
+  )
+
+  output$download_plot <- downloadHandler(
+    filename = function() {
+      paste0(input$cluster_method, "_TreePlot_", Sys.Date(), ".pdf")
+    },
+    content = function(file) {
+      pdf(file, width = 15, height = 10)
+      if(input$cluster_method == "linear") {
+        plot_linear_tree(rv$hc, clustering_results(), input$num_bins, input$distance_method)
+      } else if(input$cluster_method == "dynamic") {
+        plot_dynamic_tree(
+          rv$hc, rv$dend, rv$df, clustering_results(),
+          input$distance_method, input$deepSplit, input$minClusterSize,
+          input$show_rectangles, input$show_bin_numbers,
+          input$color_tip_text, input$show_bottom_labels
+        )
+      } else if(input$cluster_method == "height") {
+        plot_height_tree(
+          rv$hc, rv$dend, rv$df, clustering_results(),
+          input$distance_method, input$cut_height,
+          input$show_height_line, input$color_height_clusters, input$show_height_rectangles
+        )
+      }
+      dev.off()
+    }
+  )
+
+  output$download_group <- downloadHandler(
+    filename = function() {
+      paste0(input$cluster_method, "_GroupPlot_", Sys.Date(), ".pdf")
+    },
+    content = function(file) {
+      pdf(file, width = 12, height = 8)
+      p <- plot_group_composition(clustering_results(), input$cluster_method)
+      print(p)
+      dev.off()
+    }
+  )
+
+  output$download_histogram <- downloadHandler(
+    filename = function() {
+      paste0(input$cluster_method, "_HistogramPlot_", Sys.Date(), ".pdf")
+    },
+    content = function(file) {
+      if(input$cluster_method == "height") {
+        title <- paste0("Cluster Size Distribution at h=", round(input$cut_height, 2))
+      } else if(input$cluster_method == "linear") {
+        title <- paste0("Bin Size Distribution with ", input$num_bins, " bins")
+      } else {
+        title <- paste0("Dynamic Cluster Size Distribution (deepSplit=", input$deepSplit,
+                       ", minSize=", input$minClusterSize, ")")
+      }
+
+      pdf(file, width = 12, height = 8)
+      p <- plot_histogram(clustering_results(), input$cluster_method, title)
+      print(p)
+      dev.off()
+    }
+  )
+}

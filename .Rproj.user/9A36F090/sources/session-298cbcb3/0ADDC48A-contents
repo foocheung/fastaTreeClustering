@@ -1,0 +1,3 @@
+default:
+  golem_name: fastaTreeClustering
+  app_prod: no
