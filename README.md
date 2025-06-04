@@ -6,9 +6,8 @@ https://github.com/user-attachments/assets/3b4399b2-4ea0-480d-be69-1af5ad9f6186
 
 
 
-An interactive Shiny application for clustering and visualizing CDR3 amino acid sequences from FASTA files using edit-distance–based phylogenetic trees.
+An interactive Shiny R package application for clustering and visualizing CDR3 amino acid sequences from FASTA files using edit-distance–based phylogenetic trees.
 
-Built with [`{golem}`](https://engineering-shiny.org/golem.html) for modularity and production-ready deployment.
 
 ---
 
